@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 from dash import ALL, Dash, Input, Output, State, ctx, dash_table, dcc, html
+from dash.dash_table.Format import Format, Group, Scheme, Symbol
 from plotly.subplots import make_subplots
 
 from analytics import (
@@ -31,6 +32,8 @@ DATA_DIR = ROOT_DIR / "data"
 PORTFOLIO_PATH = DATA_DIR / "portfolio.csv"
 LIMITS_PATH = DATA_DIR / "limits.csv"
 SAMPLE_NAV_USD = 250_000_000
+MONEY_MILLIONS_FORMAT = Format(precision=2, scheme=Scheme.fixed, group=Group.yes, symbol=Symbol.yes, symbol_prefix="$", symbol_suffix="m")
+PERCENT_FORMAT = Format(precision=0, scheme=Scheme.fixed, symbol=Symbol.yes, symbol_suffix="%")
 
 
 def money(value: float, decimals: int = 2) -> str:
@@ -131,7 +134,7 @@ def position_table(metrics: pd.DataFrame, risk: pd.DataFrame) -> dash_table.Data
         on="trade_id",
         how="left",
     ).sort_values("inception_pnl_usd", ascending=False)
-    for field in [
+    money_fields = [
         "current_npv_usd",
         "daily_pnl_usd",
         "mtd_pnl_usd",
@@ -139,8 +142,9 @@ def position_table(metrics: pd.DataFrame, risk: pd.DataFrame) -> dash_table.Data
         "inception_pnl_usd",
         "position_var_usd",
         "component_var_usd",
-    ]:
-        display[field] = display[field].map(money)
+    ]
+    for field in money_fields:
+        display[field] = display[field] / 1_000_000
     labels = {
         "trade_id": "Trade",
         "currency_pair": "Pair",
@@ -156,9 +160,15 @@ def position_table(metrics: pd.DataFrame, risk: pd.DataFrame) -> dash_table.Data
     }
     fields = list(labels)
     display = display[fields].rename(columns=labels)
+    columns = [
+        {"name": label, "id": label, "type": "numeric", "format": MONEY_MILLIONS_FORMAT} if field in money_fields else {"name": label, "id": label}
+        for field, label in labels.items()
+    ]
     return dash_table.DataTable(
         data=display.to_dict("records"),
-        columns=[{"name": name, "id": name} for name in display.columns],
+        columns=columns,
+        sort_action="native",
+        sort_mode="multi",
         style_table={"height": "550px", "overflowX": "auto", "overflowY": "auto"},
         style_header={"backgroundColor": "#eef3f7", "border": "none", "color": "#40556d", "fontWeight": 700, "fontSize": 11, "letterSpacing": ".04em", "padding": "12px", "whiteSpace": "normal"},
         style_cell={"backgroundColor": "white", "border": "none", "borderBottom": "1px solid #edf1f5", "color": "#23364d", "fontFamily": "Inter, Arial, sans-serif", "fontSize": 12, "padding": "12px", "textAlign": "right"},
@@ -311,6 +321,82 @@ def ledger_cells(values: dict[str, float], spot: str = "—") -> list[html.Div]:
     ]
 
 
+LEDGER_COLUMNS = [
+    ("book_view", "Book view"),
+    ("inception_pnl_usd", "P&L"),
+    ("current_npv_usd", "Position value"),
+    ("net_notional_usd", "Position value (base CCY)"),
+    ("daily_pnl_usd", "Change"),
+    ("mtd_pnl_usd", "MTD P&L"),
+    ("start_npv_usd", "Start NPV"),
+    ("as_of_spot", "Current spot"),
+    ("gross_notional_usd", "Gross USD"),
+    ("trade_count", "Trades"),
+]
+
+
+def sort_specification(sort_state: dict[str, str] | None) -> tuple[str, bool]:
+    """Return the selected column and sort direction for a hierarchy view."""
+    column = (sort_state or {}).get("column", "book_view")
+    direction = (sort_state or {}).get("direction", "asc")
+    return str(column), direction == "asc"
+
+
+def sortable_header(scope: str, columns: list[tuple[str, str]], sort_state: dict[str, str] | None, row_class: str) -> html.Div:
+    """Render hierarchy headers that cycle between ascending and descending order."""
+    active_column, ascending = sort_specification(sort_state)
+    cells = []
+    for column, label in columns:
+        marker = "▲" if column == active_column and ascending else "▼" if column == active_column else "↕"
+        cells.append(
+            html.Button(
+                [html.Span(label), html.Span(marker, className="sort-marker")],
+                id={"type": f"{scope}-sort", "index": column},
+                className="ledger-cell sortable-header",
+                n_clicks=0,
+                title=f"Sort by {label}",
+            )
+        )
+    return html.Div(cells, className=f"{row_class} ledger-header")
+
+
+def next_sort_state(current: dict[str, str] | None, column: str) -> dict[str, str]:
+    """Toggle the active column or begin a new numeric sort in descending order."""
+    current_column, ascending = sort_specification(current)
+    if column == current_column:
+        return {"column": column, "direction": "desc" if ascending else "asc"}
+    return {"column": column, "direction": "asc" if column == "book_view" else "desc"}
+
+
+def ledger_sort_value(frame: pd.DataFrame, label: str, sort_state: dict[str, str] | None) -> float | str:
+    """Return a comparable roll-up value without altering the grouped trade set."""
+    column, _ = sort_specification(sort_state)
+    if column == "book_view":
+        return label
+    if column == "as_of_spot":
+        # Group rows spanning several pairs intentionally display no single spot.
+        return label
+    return ledger_metrics(frame)[column]
+
+
+def ordered_group_subsets(frame: pd.DataFrame, field: str, sort_state: dict[str, str] | None) -> list[tuple[object, pd.DataFrame]]:
+    """Sort one hierarchy level by its requested roll-up measure."""
+    _, ascending = sort_specification(sort_state)
+    items = list(frame.groupby(field, dropna=False, sort=False))
+    return sorted(items, key=lambda item: ledger_sort_value(item[1], str(item[0]), sort_state), reverse=not ascending)
+
+
+def ordered_leaf_trades(frame: pd.DataFrame, sort_state: dict[str, str] | None) -> pd.DataFrame:
+    """Sort trade leaves by a displayed ledger measure."""
+    column, ascending = sort_specification(sort_state)
+    if column == "book_view":
+        return frame.sort_values(["instrument_name", "trade_id"], ascending=ascending)
+    if column == "trade_count":
+        return frame.sort_values("trade_id", ascending=ascending)
+    leaf_columns = {"net_notional_usd": "signed_notional_usd", "gross_notional_usd": "notional_usd"}
+    return frame.sort_values(leaf_columns.get(column, column), ascending=ascending)
+
+
 def group_path(parent_path: tuple[tuple[str, str], ...], field: str, value: object) -> tuple[tuple[str, str], ...]:
     return (*parent_path, (field, str(value)))
 
@@ -341,14 +427,21 @@ def leaf_row(trade: pd.Series, depth: int) -> html.Div:
     )
 
 
-def ledger_nodes(frame: pd.DataFrame, fields: list[str], expanded: set[str], depth: int = 0, parent_path: tuple[tuple[str, str], ...] = ()) -> list[html.Div]:
+def ledger_nodes(
+    frame: pd.DataFrame,
+    fields: list[str],
+    expanded: set[str],
+    sort_state: dict[str, str] | None,
+    depth: int = 0,
+    parent_path: tuple[tuple[str, str], ...] = (),
+) -> list[html.Div]:
     """Create only the currently visible rows of the expandable book hierarchy."""
     if depth >= len(fields):
-        return [leaf_row(trade, depth) for _, trade in frame.sort_values("trade_id").iterrows()]
+        return [leaf_row(trade, depth) for _, trade in ordered_leaf_trades(frame, sort_state).iterrows()]
 
     field = fields[depth]
     rows: list[html.Div] = []
-    for value, subset in frame.groupby(field, dropna=False, sort=True):
+    for value, subset in ordered_group_subsets(frame, field, sort_state):
         path = group_path(parent_path, field, value)
         key = group_key(path)
         is_open = key in expanded
@@ -367,16 +460,15 @@ def ledger_nodes(frame: pd.DataFrame, fields: list[str], expanded: set[str], dep
             )
         )
         if is_open:
-            rows.extend(ledger_nodes(subset, fields, expanded, depth + 1, path))
+            rows.extend(ledger_nodes(subset, fields, expanded, sort_state, depth + 1, path))
     return rows
 
 
-def trade_ledger(metrics: pd.DataFrame, grouping: list[str], expanded: list[str]) -> html.Div:
+def trade_ledger(metrics: pd.DataFrame, grouping: list[str], expanded: list[str], sort_state: dict[str, str] | None) -> html.Div:
     """Build the configurable, expandable trade-breakdown ledger."""
-    columns = ["Book view", "P&L", "Position value", "Position value (base CCY)", "Change", "MTD P&L", "Start NPV", "Current spot", "Gross USD", "Trades"]
-    header = html.Div([html.Div(column, className="ledger-cell") for column in columns], className="ledger-row ledger-header")
+    header = sortable_header("ledger", LEDGER_COLUMNS, sort_state, "ledger-row")
     expanded_set = set(expanded or [])
-    rows = ledger_nodes(metrics, grouping, expanded_set) if grouping else [leaf_row(trade, 0) for _, trade in metrics.sort_values("trade_id").iterrows()]
+    rows = ledger_nodes(metrics, grouping, expanded_set, sort_state) if grouping else [leaf_row(trade, 0) for _, trade in ordered_leaf_trades(metrics, sort_state).iterrows()]
     return html.Div([grouping_shelf("ledger", grouping), grouping_headers("ledger"), header, *rows], className="ledger-scroll")
 
 
@@ -462,6 +554,117 @@ def risk_ledger_cells(values: dict[str, float], risk_type: str) -> list[html.Div
     ]
 
 
+RISK_COLUMNS_BY_TYPE = {
+    "var": [
+        ("book_view", "Risk view"),
+        ("component", "VaR contribution"),
+        ("position", "Position VaR"),
+        ("marginal", "Marginal VaR / $1m"),
+        ("worst", "Worst loss"),
+        ("second", "2nd-worst loss"),
+        ("third", "3rd-worst loss"),
+        ("gross", "Gross USD"),
+        ("trades", "Trades"),
+    ],
+    "cvar": [
+        ("book_view", "Risk view"),
+        ("component", "Expected-Shortfall contribution"),
+        ("position", "Position Expected Shortfall"),
+        ("position_var", "Position VaR"),
+        ("worst", "Worst loss"),
+        ("second", "2nd-worst loss"),
+        ("third", "3rd-worst loss"),
+        ("gross", "Gross USD"),
+        ("trades", "Trades"),
+    ],
+    "marginal": [
+        ("book_view", "Risk view"),
+        ("marginal", "Marginal VaR / $1m"),
+        ("position_var", "Position VaR"),
+        ("bumped", "Bumped portfolio VaR"),
+        ("component", "Component VaR"),
+        ("worst", "Worst loss"),
+        ("second", "2nd-worst loss"),
+        ("gross", "Gross USD"),
+        ("trades", "Trades"),
+    ],
+}
+
+
+def risk_sort_value(
+    frame: pd.DataFrame,
+    label: str,
+    sort_state: dict[str, str] | None,
+    trade_scenarios: pd.DataFrame,
+    portfolio_scenarios: pd.Series,
+    portfolio_var: float,
+    portfolio_tail_dates: pd.Index,
+    portfolio_cvar_dates: pd.Index,
+    risk_type: str,
+) -> float | str:
+    """Return a group risk measure for display ordering without changing its calculation."""
+    column, _ = sort_specification(sort_state)
+    if column == "book_view":
+        return label
+    values = risk_metrics_for_subset(frame, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates)
+    fields = {
+        "component": "component_cvar_usd" if risk_type == "cvar" else "component_var_usd",
+        "position": "position_cvar_usd" if risk_type == "cvar" else "position_var_usd",
+        "position_var": "position_var_usd",
+        "marginal": "marginal_var_per_usd_m",
+        "bumped": "bumped_portfolio_var_usd",
+        "worst": "worst_loss_usd",
+        "second": "second_worst_loss_usd",
+        "third": "third_worst_loss_usd",
+        "gross": "gross_notional_usd",
+        "trades": "trade_count",
+    }
+    return values[fields[column]]
+
+
+def ordered_risk_group_subsets(
+    frame: pd.DataFrame,
+    field: str,
+    sort_state: dict[str, str] | None,
+    trade_scenarios: pd.DataFrame,
+    portfolio_scenarios: pd.Series,
+    portfolio_var: float,
+    portfolio_tail_dates: pd.Index,
+    portfolio_cvar_dates: pd.Index,
+    risk_type: str,
+) -> list[tuple[object, pd.DataFrame]]:
+    """Sort sibling groups using the active historical-risk table column."""
+    _, ascending = sort_specification(sort_state)
+    items = list(frame.groupby(field, dropna=False, sort=False))
+    return sorted(
+        items,
+        key=lambda item: risk_sort_value(item[1], str(item[0]), sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type),
+        reverse=not ascending,
+    )
+
+
+def ordered_risk_leaf_trades(
+    frame: pd.DataFrame,
+    sort_state: dict[str, str] | None,
+    trade_scenarios: pd.DataFrame,
+    portfolio_scenarios: pd.Series,
+    portfolio_var: float,
+    portfolio_tail_dates: pd.Index,
+    portfolio_cvar_dates: pd.Index,
+    risk_type: str,
+) -> list[pd.Series]:
+    """Order leaf positions by a displayed historical-risk measure."""
+    column, ascending = sort_specification(sort_state)
+    if column == "book_view":
+        return [trade for _, trade in frame.sort_values(["instrument_name", "trade_id"], ascending=ascending).iterrows()]
+    trades = [trade for _, trade in frame.iterrows()]
+    return sorted(
+        trades,
+        key=lambda trade: risk_sort_value(pd.DataFrame([trade]), str(trade["trade_id"]), sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type),
+        reverse=not ascending,
+    )
+
+
 def risk_leaf_row(
     trade: pd.Series,
     depth: int,
@@ -490,15 +693,16 @@ def risk_ledger_nodes(
     portfolio_tail_dates: pd.Index,
     portfolio_cvar_dates: pd.Index,
     risk_type: str,
+    sort_state: dict[str, str] | None,
     depth: int = 0,
     parent_path: tuple[tuple[str, str], ...] = (),
 ) -> list[html.Div]:
     if depth >= len(fields):
-        return [risk_leaf_row(trade, depth, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for _, trade in frame.sort_values("trade_id").iterrows()]
+        return [risk_leaf_row(trade, depth, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for trade in ordered_risk_leaf_trades(frame, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
 
     field = fields[depth]
     rows: list[html.Div] = []
-    for value, subset in frame.groupby(field, dropna=False, sort=True):
+    for value, subset in ordered_risk_group_subsets(frame, field, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type):
         path = group_path(parent_path, field, value)
         key = group_key(path)
         is_open = key in expanded
@@ -516,7 +720,7 @@ def risk_ledger_nodes(
             )
         )
         if is_open:
-            rows.extend(risk_ledger_nodes(subset, fields, expanded, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, depth + 1, path))
+            rows.extend(risk_ledger_nodes(subset, fields, expanded, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state, depth + 1, path))
     return rows
 
 
@@ -530,19 +734,14 @@ def risk_ledger(
     portfolio_tail_dates: pd.Index,
     portfolio_cvar_dates: pd.Index,
     risk_type: str,
+    sort_state: dict[str, str] | None,
 ) -> html.Div:
-    columns_by_type = {
-        "var": ["Risk view", "VaR contribution", "Position VaR", "Marginal VaR / $1m", "Worst loss", "2nd-worst loss", "3rd-worst loss", "Gross USD", "Trades"],
-        "cvar": ["Risk view", "Expected-Shortfall contribution", "Position Expected Shortfall", "Position VaR", "Worst loss", "2nd-worst loss", "3rd-worst loss", "Gross USD", "Trades"],
-        "marginal": ["Risk view", "Marginal VaR / $1m", "Position VaR", "Bumped portfolio VaR", "Component VaR", "Worst loss", "2nd-worst loss", "Gross USD", "Trades"],
-    }
-    columns = columns_by_type[risk_type]
-    header = html.Div([html.Div(column, className="ledger-cell") for column in columns], className="risk-row ledger-header")
+    header = sortable_header("var", RISK_COLUMNS_BY_TYPE[risk_type], sort_state, "risk-row")
     expanded_set = set(expanded or [])
     if grouping:
-        rows = risk_ledger_nodes(metrics, grouping, expanded_set, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)
+        rows = risk_ledger_nodes(metrics, grouping, expanded_set, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state)
     else:
-        rows = [risk_leaf_row(trade, 0, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for _, trade in metrics.sort_values("trade_id").iterrows()]
+        rows = [risk_leaf_row(trade, 0, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for trade in ordered_risk_leaf_trades(metrics, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
     return html.Div([grouping_shelf("var", grouping), grouping_headers("var"), header, *rows], className="risk-scroll")
 
 
@@ -652,9 +851,20 @@ def limit_table(rows: list[dict[str, float | str]], include_pretrade: bool = Fal
         display = display[["Metric", "Current", "Proposed", "Limit", "Utilisation", "Status"]]
     else:
         display = display[["Metric", "Current", "Limit", "Utilisation", "Status"]]
+    numeric_columns = {"Current", "Proposed", "Limit"}
+    columns = []
+    for column in display.columns:
+        if column in numeric_columns:
+            columns.append({"name": column, "id": column, "type": "numeric", "format": MONEY_MILLIONS_FORMAT})
+        elif column == "Utilisation":
+            columns.append({"name": column, "id": column, "type": "numeric", "format": PERCENT_FORMAT})
+        else:
+            columns.append({"name": column, "id": column})
     return dash_table.DataTable(
         data=display.to_dict("records"),
-        columns=[{"name": column, "id": column} for column in display.columns],
+        columns=columns,
+        sort_action="native",
+        sort_mode="multi",
         style_table={"overflowX": "auto"},
         style_header={"backgroundColor": "#eef3f7", "border": "none", "color": "#40556d", "fontWeight": 700, "fontSize": 10, "letterSpacing": ".04em", "padding": "11px", "textTransform": "uppercase"},
         style_cell={"backgroundColor": "white", "border": "none", "borderBottom": "1px solid #edf1f5", "color": "#334b63", "fontFamily": "Inter, Arial, sans-serif", "fontSize": 12, "padding": "11px", "textAlign": "right"},
@@ -686,7 +896,7 @@ def limit_monitor_rows(state: dict[str, object]) -> list[dict[str, str]]:
     rows = []
     for label, value, limit in measures:
         status, utilisation, _ = limit_status(value, limit)
-        rows.append({"Metric": label, "Current": money(value), "Limit": money(limit), "Utilisation": f"{utilisation:.0f}%", "Status": status})
+        rows.append({"Metric": label, "Current": value / 1_000_000, "Limit": limit / 1_000_000, "Utilisation": utilisation, "Status": status})
     return rows
 
 
@@ -747,12 +957,15 @@ def scenario_chart(results: pd.DataFrame) -> go.Figure:
 
 def scenario_table(results: pd.DataFrame) -> dash_table.DataTable:
     display = results.copy()
-    display["pnl_usd"] = display["pnl_usd"].map(money)
-    display["driver_pnl_usd"] = display["driver_pnl_usd"].map(money)
+    display["pnl_usd"] = display["pnl_usd"] / 1_000_000
+    display["driver_pnl_usd"] = display["driver_pnl_usd"] / 1_000_000
     display = display.rename(columns={"scenario": "Scenario", "pnl_usd": "Portfolio P&L", "driver": "Largest loss driver", "driver_pnl_usd": "Driver P&L"})
+    money_columns = {"Portfolio P&L", "Driver P&L"}
     return dash_table.DataTable(
         data=display.to_dict("records"),
-        columns=[{"name": column, "id": column} for column in display.columns],
+        columns=[{"name": column, "id": column, "type": "numeric", "format": MONEY_MILLIONS_FORMAT} if column in money_columns else {"name": column, "id": column} for column in display.columns],
+        sort_action="native",
+        sort_mode="multi",
         style_table={"overflowX": "auto"},
         style_header={"backgroundColor": "#eef3f7", "border": "none", "color": "#40556d", "fontWeight": 700, "fontSize": 10, "letterSpacing": ".04em", "padding": "11px", "textTransform": "uppercase"},
         style_cell={"backgroundColor": "white", "border": "none", "borderBottom": "1px solid #edf1f5", "color": "#334b63", "fontFamily": "Inter, Arial, sans-serif", "fontSize": 12, "padding": "11px", "textAlign": "right"},
@@ -826,8 +1039,10 @@ def build_dashboard() -> Dash:
             ),
             dcc.Store(id="ledger-expanded", data=[]),
             dcc.Store(id="ledger-grouping", data=["trader", "strategy", "currency_pair", "product_type"]),
+            dcc.Store(id="ledger-sort", data={"column": "book_view", "direction": "asc"}),
             dcc.Store(id="var-expanded", data=[]),
             dcc.Store(id="var-grouping", data=["trader", "strategy", "currency_pair"]),
+            dcc.Store(id="var-sort", data={"column": "book_view", "direction": "asc"}),
             dcc.Tabs(id="main-tabs", value="performance", children=[dcc.Tab(label="Performance Monitor", value="performance"), dcc.Tab(label="Trade Ledger", value="trades"), dcc.Tab(label="Historical VaR", value="var"), dcc.Tab(label="Limits & Scenarios", value="limits")]),
             html.Main(id="tab-content", className="content"),
         ],
@@ -844,10 +1059,22 @@ def build_dashboard() -> Dash:
             return limits_layout(state)
         return performance_layout(state)
 
-    @app.callback(Output("trade-ledger", "children"), Input("ledger-grouping", "data"), Input("ledger-expanded", "data"))
-    def render_ledger(grouping: list[str] | None, expanded: list[str] | None) -> html.Div:
+    @app.callback(Output("trade-ledger", "children"), Input("ledger-grouping", "data"), Input("ledger-expanded", "data"), Input("ledger-sort", "data"))
+    def render_ledger(grouping: list[str] | None, expanded: list[str] | None, sort_state: dict[str, str] | None) -> html.Div:
         selected = [field for field in (grouping or []) if field in GROUPING_OPTIONS]
-        return trade_ledger(state["metrics"], selected, expanded or [])
+        return trade_ledger(state["metrics"], selected, expanded or [], sort_state)
+
+    @app.callback(
+        Output("ledger-sort", "data"),
+        Input({"type": "ledger-sort", "index": ALL}, "n_clicks"),
+        State("ledger-sort", "data"),
+        prevent_initial_call=True,
+    )
+    def update_ledger_sort(_clicks: list[int], current: dict[str, str] | None) -> dict[str, str]:
+        triggered = ctx.triggered_id
+        if isinstance(triggered, dict):
+            return next_sort_state(current, str(triggered["index"]))
+        return current or {"column": "book_view", "direction": "asc"}
 
     @app.callback(
         Output("ledger-expanded", "data"),
@@ -882,6 +1109,7 @@ def build_dashboard() -> Dash:
         Input("var-type", "value"),
         Input("var-grouping", "data"),
         Input("var-expanded", "data"),
+        Input("var-sort", "data"),
     )
     def render_var(
         lookback_days: int,
@@ -889,13 +1117,14 @@ def build_dashboard() -> Dash:
         risk_type: str,
         grouping: list[str] | None,
         expanded: list[str] | None,
+        sort_state: dict[str, str] | None,
     ) -> tuple[html.Div, go.Figure, go.Figure, html.Div]:
         selected = [field for field in (grouping or []) if field in GROUPING_OPTIONS]
         scenarios = simulated_trade_pnl(state["trades"], state["prices"], int(lookback_days), vintage)
         portfolio_scenarios = scenarios.sum(axis=1)
         portfolio_var, tail_dates = var_from_pnl(portfolio_scenarios)
         portfolio_cvar, cvar_dates = cvar_from_pnl(portfolio_scenarios, portfolio_var)
-        ledger = risk_ledger(state["metrics"], selected, expanded or [], scenarios, portfolio_scenarios, portfolio_var, tail_dates, cvar_dates, risk_type)
+        ledger = risk_ledger(state["metrics"], selected, expanded or [], scenarios, portfolio_scenarios, portfolio_var, tail_dates, cvar_dates, risk_type, sort_state)
         contribution, distribution = risk_figures(state["metrics"], selected, scenarios, portfolio_scenarios, portfolio_var, tail_dates, cvar_dates, risk_type)
         tail_losses = -portfolio_scenarios.loc[tail_dates]
         if risk_type == "cvar":
@@ -921,6 +1150,18 @@ def build_dashboard() -> Dash:
             className="var-summary-grid",
         )
         return ledger, contribution, distribution, summary
+
+    @app.callback(
+        Output("var-sort", "data"),
+        Input({"type": "var-sort", "index": ALL}, "n_clicks"),
+        State("var-sort", "data"),
+        prevent_initial_call=True,
+    )
+    def update_var_sort(_clicks: list[int], current: dict[str, str] | None) -> dict[str, str]:
+        triggered = ctx.triggered_id
+        if isinstance(triggered, dict):
+            return next_sort_state(current, str(triggered["index"]))
+        return current or {"column": "book_view", "direction": "asc"}
 
     @app.callback(
         Output("var-expanded", "data"),
