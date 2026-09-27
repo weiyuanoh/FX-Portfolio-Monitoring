@@ -124,39 +124,48 @@ def base_layout(title: str) -> dict:
     }
 
 
-def position_table(position_summary: pd.DataFrame) -> dash_table.DataTable:
-    display = position_summary.copy()
-    display["gross_notional_usd"] = display["gross_notional_usd"].map(money)
-    display["net_notional_usd"] = display["net_notional_usd"].map(money)
-    display["spot"] = display["spot"].map(number)
-    for field in ["daily_pnl_usd", "mtd_pnl_usd", "ytd_pnl_usd", "inception_pnl_usd", "position_var_usd", "component_var_usd", "marginal_var_per_usd_m"]:
+def position_table(metrics: pd.DataFrame, risk: pd.DataFrame) -> dash_table.DataTable:
+    """Show every live trade's contribution on the high-level performance page."""
+    display = metrics.merge(
+        risk[["trade_id", "position_var_usd", "component_var_usd"]],
+        on="trade_id",
+        how="left",
+    ).sort_values("inception_pnl_usd", ascending=False)
+    for field in [
+        "current_npv_usd",
+        "daily_pnl_usd",
+        "mtd_pnl_usd",
+        "ytd_pnl_usd",
+        "inception_pnl_usd",
+        "position_var_usd",
+        "component_var_usd",
+    ]:
         display[field] = display[field].map(money)
     labels = {
+        "trade_id": "Trade",
         "currency_pair": "Pair",
-        "direction": "Net direction",
-        "gross_notional_usd": "Gross notional",
-        "net_notional_usd": "Net notional",
-        "spot": "Current spot",
+        "strategy": "Strategy",
+        "side": "Direction",
+        "current_npv_usd": "Current NPV",
         "daily_pnl_usd": "Daily P&L",
         "mtd_pnl_usd": "MTD P&L",
         "ytd_pnl_usd": "YTD P&L",
-        "inception_pnl_usd": "Since inception",
+        "inception_pnl_usd": "P&L",
         "position_var_usd": "Position VaR",
         "component_var_usd": "Component VaR",
-        "marginal_var_per_usd_m": "Marginal VaR / $1m",
     }
     fields = list(labels)
     display = display[fields].rename(columns=labels)
     return dash_table.DataTable(
         data=display.to_dict("records"),
         columns=[{"name": name, "id": name} for name in display.columns],
-        style_table={"overflowX": "auto"},
+        style_table={"height": "550px", "overflowX": "auto", "overflowY": "auto"},
         style_header={"backgroundColor": "#eef3f7", "border": "none", "color": "#40556d", "fontWeight": 700, "fontSize": 11, "letterSpacing": ".04em", "padding": "12px", "whiteSpace": "normal"},
         style_cell={"backgroundColor": "white", "border": "none", "borderBottom": "1px solid #edf1f5", "color": "#23364d", "fontFamily": "Inter, Arial, sans-serif", "fontSize": 12, "padding": "12px", "textAlign": "right"},
-        style_cell_conditional=[{"if": {"column_id": column}, "textAlign": "left"} for column in ["Pair", "Net direction"]],
+        style_cell_conditional=[{"if": {"column_id": column}, "textAlign": "left"} for column in ["Trade", "Pair", "Strategy", "Direction"]],
         style_data_conditional=[
-            {"if": {"filter_query": '{Net direction} = "Net long USD"'}, "borderLeft": "3px solid #0b8673"},
-            {"if": {"filter_query": '{Net direction} = "Net short USD"'}, "borderLeft": "3px solid #db654e"},
+            {"if": {"filter_query": '{Direction} = "Buy USD"'}, "borderLeft": "3px solid #0b8673"},
+            {"if": {"filter_query": '{Direction} = "Sell USD"'}, "borderLeft": "3px solid #db654e"},
         ],
     )
 
@@ -243,7 +252,7 @@ def performance_layout(state: dict[str, object]) -> html.Div:
     """Build the existing high-level performance-monitoring view."""
     metrics = state["metrics"]
     history = state["history"]
-    positions = state["positions"]
+    risk = state["risk"]
     current = history.iloc[-1]
     trailing = history.tail(63)["daily_return"]
     sharpe = (trailing.mean() / trailing.std(ddof=1) * (252**0.5)) if trailing.std(ddof=1) > 0 else 0.0
@@ -266,7 +275,7 @@ def performance_layout(state: dict[str, object]) -> html.Div:
                 ],
                 className="metrics-grid",
             ),
-            html.Div([html.Div([html.Div("Position contribution", className="panel-heading"), position_table(positions)], className="panel table-panel"), html.Div([dcc.Graph(figure=pnl_drawdown_chart(history), config={"displayModeBar": False}), dcc.Graph(figure=daily_pnl_chart(history), config={"displayModeBar": False})], className="chart-stack")], className="main-grid"),
+            html.Div([html.Div([html.Div("Position contribution", className="panel-heading"), html.Div(f"{len(metrics)} live trades · sorted by inception P&L", className="table-context"), position_table(metrics, risk)], className="panel table-panel"), html.Div([dcc.Graph(figure=pnl_drawdown_chart(history), config={"displayModeBar": False}), dcc.Graph(figure=daily_pnl_chart(history), config={"displayModeBar": False})], className="chart-stack")], className="main-grid"),
             html.P("Spot convention: each Buy USD trade is long USD and short a fixed local-currency amount at its entry spot. The dashboard fully reprices that local leg into USD. Position and portfolio VaR use 252 historical return scenarios applied to today’s open positions.", className="method-note"),
         ]
     )
@@ -795,6 +804,7 @@ def build_dashboard() -> Dash:
         "trades": trades,
         "prices": prices,
         "metrics": metrics,
+        "risk": risk,
         "history": history,
         "positions": positions,
         "portfolio_var": portfolio_var,

@@ -11,9 +11,11 @@ The current implementation is intentionally focused on linear FX spot. It would 
 3. **Historical VaR** uses the same flexible grouping, but applies it to VaR, Expected Shortfall, and Marginal VaR. This is intended to move from “how much risk do I have?” to “where is the risk coming from?”
 4. **Limits & Scenarios** puts the risk in context. It compares VaR across recent and earlier market regimes, monitors peak-to-trough drawdown and daily loss, and shows a small set of transparent EM-FX scenarios.
 
-The grouping flexibility is intentional. A PM may think about a book by strategy first, then by currency pair. A senior PM overseeing a pod of sub-PMs and analysts may first want to look by trader. The underlying valuation and risk methodology do not change when the view changes; only the angle used to investigate the book does.
+ > The grouping flexibility is intentional. A PM may think about a book by strategy first, then by currency pair. A senior PM overseeing a pod of sub-PMs and analysts may first want to look by trader. The underlying valuation and risk methodology do not change when the view changes; only the angle used to investigate the book does.
 
-## Run locally
+## Public dashboard
+
+The submitted dashboard is hosted publicly. It runs on a free instance, which may take a short time to wake after inactivity; this is normal. For a seamless local view, clone the repository and run:
 
 ```bash
 uv sync --locked
@@ -21,12 +23,6 @@ uv run python src/main.py
 ```
 
 Then open `http://127.0.0.1:8050`.
-
-## Deploy on Render
-
-The repository includes `render.yaml` for a public review deployment. Push the repository to GitHub, then in Render select **New → Blueprint**, connect the repository, and deploy the detected service. Render will provide an `onrender.com` URL that can be sent to the reviewer; do not send the local `127.0.0.1:8050` address.
-
-The service uses Gunicorn in production and binds to the port supplied by Render. The free plan may take a short time to wake after inactivity.
 
 ## Project structure
 
