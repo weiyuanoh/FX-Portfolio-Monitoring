@@ -1,0 +1,25 @@
+trade_id,trade_date,trader,strategy,region,currency_pair,product_type,instrument_name,side,notional_usd,entry_price
+FX001,2024-10-14,EM FX Portfolio Manager,Carry,LatAm,USDBRL,FX Spot,USDBRL Spot,Buy USD,6500000,5.5200
+FX002,2025-01-13,EM FX Portfolio Manager,Value,LatAm,USDBRL,FX Spot,USDBRL Spot,Buy USD,4000000,5.8500
+FX003,2025-06-19,EM FX Portfolio Manager,Relative Value,LatAm,USDBRL,FX Spot,USDBRL Spot,Sell USD,3000000,5.4000
+FX004,2026-03-06,EM FX Portfolio Manager,Momentum,LatAm,USDBRL,FX Spot,USDBRL Spot,Sell USD,2500000,5.6800
+FX005,2024-11-22,EM FX Portfolio Manager,Carry,LatAm,USDMXN,FX Spot,USDMXN Spot,Sell USD,7000000,18.9500
+FX006,2025-02-10,EM FX Portfolio Manager,Relative Value,LatAm,USDMXN,FX Spot,USDMXN Spot,Sell USD,9000000,19.8000
+FX007,2025-08-05,EM FX Portfolio Manager,Value,LatAm,USDMXN,FX Spot,USDMXN Spot,Buy USD,2500000,18.2000
+FX008,2026-05-21,EM FX Portfolio Manager,Event Risk,LatAm,USDMXN,FX Spot,USDMXN Spot,Buy USD,3500000,19.1000
+FX009,2024-12-03,EM FX Portfolio Manager,Carry,EMEA,USDZAR,FX Spot,USDZAR Spot,Buy USD,5000000,17.9400
+FX010,2025-03-17,EM FX Portfolio Manager,Macro,EMEA,USDZAR,FX Spot,USDZAR Spot,Buy USD,6500000,18.3000
+FX011,2025-09-26,EM FX Portfolio Manager,Mean Reversion,EMEA,USDZAR,FX Spot,USDZAR Spot,Sell USD,2800000,17.3500
+FX012,2026-04-14,EM FX Portfolio Manager,Momentum,EMEA,USDZAR,FX Spot,USDZAR Spot,Sell USD,2200000,18.7500
+FX013,2024-09-18,EM FX Portfolio Manager,Macro,EMEA,USDTRY,FX Spot,USDTRY Spot,Buy USD,3200000,34.1000
+FX014,2025-04-21,EM FX Portfolio Manager,Carry,EMEA,USDTRY,FX Spot,USDTRY Spot,Buy USD,5000000,36.0000
+FX015,2025-11-12,EM FX Portfolio Manager,Trend,EMEA,USDTRY,FX Spot,USDTRY Spot,Buy USD,3600000,39.2000
+FX016,2026-06-30,EM FX Portfolio Manager,Event Risk,EMEA,USDTRY,FX Spot,USDTRY Spot,Sell USD,1800000,42.5000
+FX017,2024-11-04,EM FX Portfolio Manager,Defensive,Asia,USDINR,FX Spot,USDINR Spot,Sell USD,5200000,84.2000
+FX018,2025-05-15,EM FX Portfolio Manager,Carry,Asia,USDINR,FX Spot,USDINR Spot,Sell USD,7000000,86.8000
+FX019,2025-10-07,EM FX Portfolio Manager,Relative Value,Asia,USDINR,FX Spot,USDINR Spot,Buy USD,2400000,88.1000
+FX020,2026-02-18,EM FX Portfolio Manager,Momentum,Asia,USDINR,FX Spot,USDINR Spot,Buy USD,3000000,87.2500
+FX021,2024-10-29,EM FX Portfolio Manager,Value,EMEA,USDPLN,FX Spot,USDPLN Spot,Sell USD,4200000,4.0100
+FX022,2025-07-08,EM FX Portfolio Manager,Relative Value,EMEA,USDPLN,FX Spot,USDPLN Spot,Sell USD,5500000,3.9200
+FX023,2025-12-15,EM FX Portfolio Manager,Macro,EMEA,USDPLN,FX Spot,USDPLN Spot,Buy USD,2600000,3.7200
+FX024,2026-06-11,EM FX Portfolio Manager,Mean Reversion,EMEA,USDPLN,FX Spot,USDPLN Spot,Buy USD,2000000,3.6500

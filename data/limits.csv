@@ -1,0 +1,5 @@
+limit_key,limit_name,limit_usd,description
+var_99_500,99% historical VaR,1000000,500-day historical VaR limit
+current_ptt,Current peak-to-trough drawdown,1500000,Loss from the current high-water mark
+maximum_ptt,Maximum peak-to-trough drawdown,2500000,Largest loss from any high-water mark
+daily_loss,One-day loss,750000,Loss versus prior close
