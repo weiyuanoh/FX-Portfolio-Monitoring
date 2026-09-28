@@ -86,16 +86,20 @@ def pnl_drawdown_chart(history: pd.DataFrame) -> go.Figure:
 
 def daily_pnl_chart(history: pd.DataFrame) -> go.Figure:
     var = rolling_var(history["daily_pnl_usd"])
-    colors = ["#0b8673" if pnl >= 0 else "#db654e" for pnl in history["daily_pnl_usd"]]
-    chart = go.Figure()
+    positive_bar = "#087a68"
+    negative_bar = "#cc4d3d"
+    colors = [positive_bar if pnl >= 0 else negative_bar for pnl in history["daily_pnl_usd"]]
+    chart = make_subplots(specs=[[{"secondary_y": True}]])
     chart.add_trace(
         go.Bar(
             x=history.index,
-            y=history["daily_pnl_usd"] / 1_000_000,
+            y=history["daily_pnl_usd"] / 1_000,
             name="Daily P&L",
             marker_color=colors,
-            hovertemplate="%{x|%d %b %Y}<br>Daily P&L: $%{y:.2f}m<extra></extra>",
-        )
+            marker_line={"color": ["#075f52" if pnl >= 0 else "#9f3428" for pnl in history["daily_pnl_usd"]], "width": 0.5},
+            hovertemplate="%{x|%d %b %Y}<br>Daily P&L: $%{y:,.0f}k<extra></extra>",
+        ),
+        secondary_y=False,
     )
     chart.add_trace(
         go.Scatter(
@@ -103,13 +107,16 @@ def daily_pnl_chart(history: pd.DataFrame) -> go.Figure:
             y=-var / 1_000_000,
             mode="lines",
             name="60d 99% VaR",
-            line={"color": "#8b3d3d", "width": 2, "dash": "dot"},
-            hovertemplate="%{x|%d %b %Y}<br>99% VaR: $%{customdata:.2f}m<extra></extra>",
+            line={"color": "#594e93", "width": 2.5, "dash": "dot"},
+            hovertemplate="%{x|%d %b %Y}<br>60d 99% VaR: $%{customdata:.1f}m<extra></extra>",
             customdata=var / 1_000_000,
-        )
+        ),
+        secondary_y=True,
     )
+    chart.add_hline(y=0, line_color="#99a9b7", line_width=1, secondary_y=False)
     chart.update_layout(**base_layout("Daily P&L versus rolling 99% VaR"), legend={"orientation": "h", "x": 0.02, "y": 1.15})
-    chart.update_yaxes(title="USD m", gridcolor="#e9eef3")
+    chart.update_yaxes(title="Daily P&L (USD k)", tickformat=",.0f", gridcolor="#dfe7ed", zeroline=False, secondary_y=False)
+    chart.update_yaxes(title="60d 99% VaR (USD m)", tickprefix="$", ticksuffix="m", tickformat=".1f", showgrid=False, zeroline=False, secondary_y=True)
     return chart
 
 
@@ -227,22 +234,6 @@ def grouping_shelf(scope: str, grouping: list[str]) -> html.Div:
     )
 
 
-def grouping_headers(scope: str) -> html.Div:
-    """Make live book dimensions draggable directly from the table header."""
-    headers = [
-        html.Button(
-            [html.Span("⠿", className="header-drag-mark"), html.Span(label)],
-            className="dimension-header",
-            type="button",
-            draggable="true",
-            title=f"Drag {label} to Group by",
-            **{"data-group-field": field, "data-group-scope": scope},
-        )
-        for field, label in GROUPING_OPTIONS.items()
-    ]
-    return html.Div(headers, className="dimension-header-row", **{"data-group-header-row": scope})
-
-
 VINTAGE_LABELS = {
     "eod": "EOD · latest return sample",
     "year_1": "Year −1 · prior return sample",
@@ -334,6 +325,53 @@ LEDGER_COLUMNS = [
     ("trade_count", "Trades"),
 ]
 
+LEDGER_MEASURE_COLUMNS = LEDGER_COLUMNS[1:]
+# Every header stays on one line.  ``max-content`` gives a short label such as
+# "Trades" only the room it needs, while still allowing the whole table to
+# flex on larger screens and scroll naturally on smaller ones.
+LEDGER_MEASURE_WIDTHS = [
+    "minmax(max-content, 1.15fr)",
+    "minmax(max-content, 1.15fr)",
+    "minmax(max-content, 1.3fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, .85fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, .55fr)",
+]
+RISK_MEASURE_WIDTHS = [
+    "minmax(max-content, 1.1fr)",
+    "minmax(max-content, 1.1fr)",
+    "minmax(max-content, 1.3fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, 1fr)",
+    "minmax(max-content, .55fr)",
+]
+
+
+def ungrouped_dimension_columns(grouping: list[str]) -> list[tuple[str, str]]:
+    """Show categorical detail only when that field is not already a tree level."""
+    grouped = set(grouping)
+    return [(field, label) for field, label in GROUPING_OPTIONS.items() if field not in grouped]
+
+
+def hierarchy_columns(measure_columns: list[tuple[str, str]], grouping: list[str]) -> list[tuple[str, str]]:
+    """Build a table view without duplicating dimensions already used to group."""
+    primary_label = "Trade ID" if not grouping else "Book view"
+    return [("book_view", primary_label), *ungrouped_dimension_columns(grouping), *measure_columns]
+
+
+def hierarchy_row_style(dimension_count: int, measure_widths: list[str]) -> dict[str, str]:
+    columns = ["minmax(230px, 1.7fr)", *("minmax(max-content, .9fr)" for _ in range(dimension_count)), *measure_widths]
+    return {"gridTemplateColumns": " ".join(columns)}
+
+
+def hierarchy_scroll_style(dimension_count: int) -> dict[str, str]:
+    return {"minWidth": f"{1160 + dimension_count * 140}px"}
+
 
 def sort_specification(sort_state: dict[str, str] | None) -> tuple[str, bool]:
     """Return the selected column and sort direction for a hierarchy view."""
@@ -342,22 +380,36 @@ def sort_specification(sort_state: dict[str, str] | None) -> tuple[str, bool]:
     return str(column), direction == "asc"
 
 
-def sortable_header(scope: str, columns: list[tuple[str, str]], sort_state: dict[str, str] | None, row_class: str) -> html.Div:
+def sortable_header(
+    scope: str,
+    columns: list[tuple[str, str]],
+    sort_state: dict[str, str] | None,
+    row_class: str,
+    row_style: dict[str, str],
+) -> html.Div:
     """Render hierarchy headers that cycle between ascending and descending order."""
     active_column, ascending = sort_specification(sort_state)
     cells = []
     for column, label in columns:
         marker = "▲" if column == active_column and ascending else "▼" if column == active_column else "↕"
+        is_grouping_field = column in GROUPING_OPTIONS
+        header_children = [html.Span(label, className="header-label"), html.Span(marker, className="sort-marker")]
+        button_props: dict[str, object] = {
+            "id": {"type": f"{scope}-sort", "index": column},
+            "className": f"ledger-cell sortable-header{' grouping-source' if is_grouping_field else ''}",
+            "n_clicks": 0,
+            "title": f"Drag {label} to Group by" if is_grouping_field else f"Sort by {label}",
+        }
+        if is_grouping_field:
+            header_children.insert(0, html.Span("⠿", className="header-drag-mark"))
+            button_props.update({"draggable": "true", "data-group-field": column, "data-group-scope": scope})
         cells.append(
             html.Button(
-                [html.Span(label), html.Span(marker, className="sort-marker")],
-                id={"type": f"{scope}-sort", "index": column},
-                className="ledger-cell sortable-header",
-                n_clicks=0,
-                title=f"Sort by {label}",
+                header_children,
+                **button_props,
             )
         )
-    return html.Div(cells, className=f"{row_class} ledger-header")
+    return html.Div(cells, className=f"{row_class} ledger-header", style=row_style)
 
 
 def next_sort_state(current: dict[str, str] | None, column: str) -> dict[str, str]:
@@ -376,6 +428,8 @@ def ledger_sort_value(frame: pd.DataFrame, label: str, sort_state: dict[str, str
     if column == "as_of_spot":
         # Group rows spanning several pairs intentionally display no single spot.
         return label
+    if column in GROUPING_OPTIONS:
+        return label
     return ledger_metrics(frame)[column]
 
 
@@ -393,6 +447,8 @@ def ordered_leaf_trades(frame: pd.DataFrame, sort_state: dict[str, str] | None) 
         return frame.sort_values(["instrument_name", "trade_id"], ascending=ascending)
     if column == "trade_count":
         return frame.sort_values("trade_id", ascending=ascending)
+    if column in GROUPING_OPTIONS:
+        return frame.sort_values([column, "trade_id"], ascending=ascending)
     leaf_columns = {"net_notional_usd": "signed_notional_usd", "gross_notional_usd": "notional_usd"}
     return frame.sort_values(leaf_columns.get(column, column), ascending=ascending)
 
@@ -418,12 +474,18 @@ def all_group_keys(frame: pd.DataFrame, fields: list[str], depth: int = 0, paren
     return keys
 
 
-def leaf_row(trade: pd.Series, depth: int) -> html.Div:
+def dimension_cells(trade: pd.Series | None, dimensions: list[tuple[str, str]]) -> list[html.Div]:
+    """Show leaf-level categorical detail and blank cells on aggregate rows."""
+    return [html.Div("" if trade is None else str(trade[field]), className="ledger-cell ledger-dimension-cell") for field, _ in dimensions]
+
+
+def leaf_row(trade: pd.Series, depth: int, dimensions: list[tuple[str, str]], grouped: bool) -> html.Div:
     values = ledger_metrics(pd.DataFrame([trade]))
-    label = f"{trade['instrument_name']} · {trade['trade_id']}"
+    label = f"{trade['instrument_name']} · {trade['trade_id']}" if grouped else str(trade["trade_id"])
     return html.Div(
-        [html.Div(label, className="ledger-label ledger-leaf", style={"paddingLeft": f"{18 + depth * 22}px"}), *ledger_cells(values, number(float(trade["as_of_spot"])))],
+        [html.Div(label, className="ledger-label ledger-leaf", style={"paddingLeft": f"{18 + depth * 22}px"}), *dimension_cells(trade, dimensions), *ledger_cells(values, number(float(trade["as_of_spot"])))],
         className="ledger-row ledger-trade",
+        style=hierarchy_row_style(len(dimensions), LEDGER_MEASURE_WIDTHS),
     )
 
 
@@ -432,12 +494,13 @@ def ledger_nodes(
     fields: list[str],
     expanded: set[str],
     sort_state: dict[str, str] | None,
+    dimensions: list[tuple[str, str]],
     depth: int = 0,
     parent_path: tuple[tuple[str, str], ...] = (),
 ) -> list[html.Div]:
     """Create only the currently visible rows of the expandable book hierarchy."""
     if depth >= len(fields):
-        return [leaf_row(trade, depth) for _, trade in ordered_leaf_trades(frame, sort_state).iterrows()]
+        return [leaf_row(trade, depth, dimensions, grouped=True) for _, trade in ordered_leaf_trades(frame, sort_state).iterrows()]
 
     field = fields[depth]
     rows: list[html.Div] = []
@@ -454,22 +517,31 @@ def ledger_nodes(
                         className="ledger-label ledger-group-label",
                         style={"paddingLeft": f"{12 + depth * 22}px"},
                     ),
+                    *dimension_cells(None, dimensions),
                     *ledger_cells(ledger_metrics(subset)),
                 ],
                 className="ledger-row ledger-group",
+                style=hierarchy_row_style(len(dimensions), LEDGER_MEASURE_WIDTHS),
             )
         )
         if is_open:
-            rows.extend(ledger_nodes(subset, fields, expanded, sort_state, depth + 1, path))
+            rows.extend(ledger_nodes(subset, fields, expanded, sort_state, dimensions, depth + 1, path))
     return rows
 
 
 def trade_ledger(metrics: pd.DataFrame, grouping: list[str], expanded: list[str], sort_state: dict[str, str] | None) -> html.Div:
     """Build the configurable, expandable trade-breakdown ledger."""
-    header = sortable_header("ledger", LEDGER_COLUMNS, sort_state, "ledger-row")
+    dimensions = ungrouped_dimension_columns(grouping)
+    header = sortable_header(
+        "ledger",
+        hierarchy_columns(LEDGER_MEASURE_COLUMNS, grouping),
+        sort_state,
+        "ledger-row",
+        hierarchy_row_style(len(dimensions), LEDGER_MEASURE_WIDTHS),
+    )
     expanded_set = set(expanded or [])
-    rows = ledger_nodes(metrics, grouping, expanded_set, sort_state) if grouping else [leaf_row(trade, 0) for _, trade in ordered_leaf_trades(metrics, sort_state).iterrows()]
-    return html.Div([grouping_shelf("ledger", grouping), grouping_headers("ledger"), header, *rows], className="ledger-scroll")
+    rows = ledger_nodes(metrics, grouping, expanded_set, sort_state, dimensions) if grouping else [leaf_row(trade, 0, dimensions, grouped=False) for _, trade in ordered_leaf_trades(metrics, sort_state).iterrows()]
+    return html.Div([grouping_shelf("ledger", grouping), header, *rows], className="ledger-scroll", style=hierarchy_scroll_style(len(dimensions)))
 
 
 def trade_layout(state: dict[str, object]) -> html.Div:
@@ -484,7 +556,7 @@ def trade_layout(state: dict[str, object]) -> html.Div:
                 className="ledger-controls panel",
             ),
             html.Div(id="trade-ledger", className="panel ledger-panel"),
-            html.P("Drag a live table column into Group by to build the hierarchy, then drag grouped fields to reorder them. P&L is since trade inception. Position value is the USD mark-to-market; base-currency position value is the signed USD notional for this USD/local-currency spot book. Start NPV is the prior-close mark, and Change is the one-day USD P&L.", className="method-note"),
+            html.P("Drag a category column header directly into Group by to build the hierarchy, then drag grouped chips to reorder them. P&L is since trade inception. Position value is the USD mark-to-market; base-currency position value is the signed USD notional for this USD/local-currency spot book. Start NPV is the prior-close mark, and Change is the one-day USD P&L.", className="method-note"),
         ]
     )
 
@@ -568,7 +640,7 @@ RISK_COLUMNS_BY_TYPE = {
     ],
     "cvar": [
         ("book_view", "Risk view"),
-        ("component", "Expected-Shortfall contribution"),
+        ("component", "Expected Shortfall contribution"),
         ("position", "Position Expected Shortfall"),
         ("position_var", "Position VaR"),
         ("worst", "Worst loss"),
@@ -591,6 +663,10 @@ RISK_COLUMNS_BY_TYPE = {
 }
 
 
+def risk_columns(risk_type: str, grouping: list[str]) -> list[tuple[str, str]]:
+    return hierarchy_columns(RISK_COLUMNS_BY_TYPE[risk_type][1:], grouping)
+
+
 def risk_sort_value(
     frame: pd.DataFrame,
     label: str,
@@ -605,6 +681,8 @@ def risk_sort_value(
     """Return a group risk measure for display ordering without changing its calculation."""
     column, _ = sort_specification(sort_state)
     if column == "book_view":
+        return label
+    if column in GROUPING_OPTIONS:
         return label
     values = risk_metrics_for_subset(frame, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates)
     fields = {
@@ -657,6 +735,8 @@ def ordered_risk_leaf_trades(
     column, ascending = sort_specification(sort_state)
     if column == "book_view":
         return [trade for _, trade in frame.sort_values(["instrument_name", "trade_id"], ascending=ascending).iterrows()]
+    if column in GROUPING_OPTIONS:
+        return [trade for _, trade in frame.sort_values([column, "trade_id"], ascending=ascending).iterrows()]
     trades = [trade for _, trade in frame.iterrows()]
     return sorted(
         trades,
@@ -674,12 +754,15 @@ def risk_leaf_row(
     portfolio_tail_dates: pd.Index,
     portfolio_cvar_dates: pd.Index,
     risk_type: str,
+    dimensions: list[tuple[str, str]],
+    grouped: bool,
 ) -> html.Div:
     values = risk_metrics_for_subset(pd.DataFrame([trade]), trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates)
-    label = f"{trade['instrument_name']} · {trade['trade_id']}"
+    label = f"{trade['instrument_name']} · {trade['trade_id']}" if grouped else str(trade["trade_id"])
     return html.Div(
-        [html.Div(label, className="ledger-label ledger-leaf", style={"paddingLeft": f"{18 + depth * 22}px"}), *risk_ledger_cells(values, risk_type)],
+        [html.Div(label, className="ledger-label ledger-leaf", style={"paddingLeft": f"{18 + depth * 22}px"}), *dimension_cells(trade, dimensions), *risk_ledger_cells(values, risk_type)],
         className="risk-row ledger-trade",
+        style=hierarchy_row_style(len(dimensions), RISK_MEASURE_WIDTHS),
     )
 
 
@@ -694,11 +777,12 @@ def risk_ledger_nodes(
     portfolio_cvar_dates: pd.Index,
     risk_type: str,
     sort_state: dict[str, str] | None,
+    dimensions: list[tuple[str, str]],
     depth: int = 0,
     parent_path: tuple[tuple[str, str], ...] = (),
 ) -> list[html.Div]:
     if depth >= len(fields):
-        return [risk_leaf_row(trade, depth, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for trade in ordered_risk_leaf_trades(frame, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
+        return [risk_leaf_row(trade, depth, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, dimensions, grouped=True) for trade in ordered_risk_leaf_trades(frame, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
 
     field = fields[depth]
     rows: list[html.Div] = []
@@ -714,13 +798,15 @@ def risk_ledger_nodes(
                         className="ledger-label ledger-group-label",
                         style={"paddingLeft": f"{12 + depth * 22}px"},
                     ),
+                    *dimension_cells(None, dimensions),
                     *risk_ledger_cells(risk_metrics_for_subset(subset, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates), risk_type),
                 ],
                 className="risk-row ledger-group",
+                style=hierarchy_row_style(len(dimensions), RISK_MEASURE_WIDTHS),
             )
         )
         if is_open:
-            rows.extend(risk_ledger_nodes(subset, fields, expanded, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state, depth + 1, path))
+            rows.extend(risk_ledger_nodes(subset, fields, expanded, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state, dimensions, depth + 1, path))
     return rows
 
 
@@ -736,13 +822,20 @@ def risk_ledger(
     risk_type: str,
     sort_state: dict[str, str] | None,
 ) -> html.Div:
-    header = sortable_header("var", RISK_COLUMNS_BY_TYPE[risk_type], sort_state, "risk-row")
+    dimensions = ungrouped_dimension_columns(grouping)
+    header = sortable_header(
+        "var",
+        risk_columns(risk_type, grouping),
+        sort_state,
+        "risk-row",
+        hierarchy_row_style(len(dimensions), RISK_MEASURE_WIDTHS),
+    )
     expanded_set = set(expanded or [])
     if grouping:
-        rows = risk_ledger_nodes(metrics, grouping, expanded_set, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state)
+        rows = risk_ledger_nodes(metrics, grouping, expanded_set, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, sort_state, dimensions)
     else:
-        rows = [risk_leaf_row(trade, 0, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type) for trade in ordered_risk_leaf_trades(metrics, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
-    return html.Div([grouping_shelf("var", grouping), grouping_headers("var"), header, *rows], className="risk-scroll")
+        rows = [risk_leaf_row(trade, 0, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type, dimensions, grouped=False) for trade in ordered_risk_leaf_trades(metrics, sort_state, trade_scenarios, portfolio_scenarios, portfolio_var, portfolio_tail_dates, portfolio_cvar_dates, risk_type)]
+    return html.Div([grouping_shelf("var", grouping), header, *rows], className="risk-scroll", style=hierarchy_scroll_style(len(dimensions)))
 
 
 def risk_figures(
@@ -817,7 +910,7 @@ def risk_layout() -> html.Div:
             html.Div(id="var-summary", className="var-summary"),
             html.Div(id="var-ledger", className="panel risk-panel"),
             html.Div([dcc.Graph(id="var-contribution-chart", config={"displayModeBar": False}), dcc.Graph(id="var-distribution-chart", config={"displayModeBar": False})], className="var-chart-grid"),
-            html.P("Drag a live table column into Group by to build the risk hierarchy, then drag grouped fields to reorder them. For every historical day, today’s EOD spot positions are held fixed and repriced using that day’s return. 99% VaR equals the average loss on the second- and third-worst simulations. Year −1 and Year −2 only shift the historical return sample; they do not substitute historical positions.", className="method-note"),
+            html.P("Drag a category column header directly into Group by to build the risk hierarchy, then drag grouped chips to reorder them. For every historical day, today’s EOD spot positions are held fixed and repriced using that day’s return. 99% VaR equals the average loss on the second- and third-worst simulations. Year −1 and Year −2 only shift the historical return sample; they do not substitute historical positions.", className="method-note"),
         ]
     )
 
